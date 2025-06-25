@@ -1,0 +1,122 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgresql:
+    image: postgres:16-alpine
+    container_name: hoa_postgresql
+    environment:
+      POSTGRES_DB: hoadb
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d hoadb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - hoa_network
+
+  # RabbitMQ Message Broker
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: hoa_rabbitmq
+    ports:
+      - "5672:5672" # AMQP protocol port
+      - "15672:15672" # Management UI port
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - hoa_network
+
+  # MinIO (local S3-compatible object storage)
+  minio:
+    image: minio/minio
+    container_name: hoa_minio
+    ports:
+      - "9000:9000" # API port
+      - "9001:9001" # Console port
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_SERVER_URL: http://minio:9000
+    command: minio server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - hoa_network
+
+  # HOA Service API
+  hoa-service:
+    build:
+      context: ./service # Build context relative to docker-compose.yml
+      dockerfile: Dockerfile
+    container_name: hoa_service
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgresql:5432/hoadb
+      SPRING_DATASOURCE_USERNAME: user
+      SPRING_DATASOURCE_PASSWORD: password
+      SPRING_RABBITMQ_HOST: rabbitmq
+      MINIO_URL: http://minio:9000
+      MINIO_ACCESSKEY: minioadmin
+      MINIO_SECRETKEY: minioadmin
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - hoa_network
+
+  # HOA Worker Task
+  hoa-worker:
+    build:
+      context: ./worker # Build context relative to docker-compose.yml
+      dockerfile: Dockerfile
+    container_name: hoa_worker
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgresql:5432/hoadb
+      SPRING_DATASOURCE_USERNAME: user
+      SPRING_DATASOURCE_PASSWORD: password
+      SPRING_RABBITMQ_HOST: rabbitmq
+      MINIO_URL: http://minio:9000
+      MINIO_ACCESSKEY: minioadmin
+      MINIO_SECRETKEY: minioadmin
+      # IMPORTANT: Replace with your actual Gemini API Key
+      GEMINI_API_KEY: YOUR_GEMINI_API_KEY_HERE # <--- IMPORTANT: Replace this placeholder!
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - hoa_network
+
+volumes:
+  postgres_data:
+  minio_data:
+
+networks:
+  hoa_network:
+    driver: bridge
